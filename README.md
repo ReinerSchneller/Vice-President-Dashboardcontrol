@@ -2,31 +2,31 @@
 
 The Vice President's site for the United States 2070. It covers the Vice President, the President of the Senate, and the Acting Secretary of War under the national emergency.
 
-## What it does
-- Document Studio:
-  - Vice President documents: statements, memoranda, and letters.
-  - President of the Senate documents: tie-breaking votes and rulings of the chair.
-  - Every War Department order type, signed as "Vice President and Acting Secretary of War" on War Department letterhead.
-- Overview: the emergency banner and the War Department command post.
-- Senate: the record of every tie-breaking vote and ruling.
-- Units, Personnel, Operations, and Military Justice: the full War Department toolkit.
-- Discord: issued documents post to the right server through the nation bot.
-- Staff: invite staff by email. Only staff can sign in or see anything.
-
 ## Deploy on Vercel
 1. Put this folder in a GitHub repository.
 2. On vercel.com, go to Add New > Project and import that repository.
 3. Framework preset: Other. No build command. Press Deploy.
 
-## One Supabase setting (required)
-In Supabase, open project us-2070-nation, then Authentication > URL Configuration:
-- Set Site URL to your Vercel address, for example https://office-of-the-vice-president.vercel.app
-- Add the same address under Redirect URLs.
+## First-time setup
+1. Open the site. It shows First-time setup.
+2. Enter your name, a username, and a password. That makes you the admin.
+3. Do this right after you deploy. Setup closes as soon as the first admin exists.
 
-If you skip this, the sign-in email sends you to the wrong address.
+## Accounts
+- Sign-in is a username and a password. No emails are sent.
+- Only an admin can add, change, or remove accounts, from the Admin tab.
+- Roles:
+  - Admin: manages accounts. Keep yourself as Admin.
+  - Vice President: the name signed on documents by default. Only one at a time. Naming a new Vice President moves the old one to Staff.
+  - Staff: drafts, signs, and issues, but cannot manage accounts.
+- When a term ends: add the new Vice President, set them as Vice President, then hold Remove on the old account.
+- Forgot password: the admin uses Reset password.
 
-## First sign-in
-The first person who signs in becomes the owner. Sign in yourself right after you deploy.
+## Optional Supabase setting
+In Supabase, open project us-2070-nation, then Authentication > Sign In / Providers, and turn off "Allow new users to sign up". The site does not need public sign-ups, because the admin makes every account. Admin-made accounts still work with it off.
 
-## Database
-The tables are already set up. supabase/setup-vp-db.sql is a copy for your records. It is safe to run again.
+## What is in this folder
+- index.html: the whole site.
+- vercel.json: security headers for Vercel.
+- vp-seal.svg: the Vice President seal.
+- supabase/: copies of the database setup and the account function, for your records. Both are already live.

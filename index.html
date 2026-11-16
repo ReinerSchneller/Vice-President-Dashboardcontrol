@@ -248,6 +248,11 @@ body.gated{overflow:hidden}
 #vp-gate label.f{text-align:left}
 #vp-gate .btn{width:100%;justify-content:center;padding:12px}
 #vp-gate .gmsg{margin:14px 0 0;color:var(--ink2);min-height:1.5em}
+#vp-gate .gnote{margin:12px 0 0;color:var(--mute);font-size:13px;line-height:1.5}
+#vp-gate h1{margin-bottom:14px}
+input[type=password],input[type=email]{width:100%;background:#fff;border:1px solid var(--hair2);border-radius:0;padding:8px 10px;color:var(--ink);font:500 14px var(--f-sub)}
+input[type=password]:focus,input[type=email]:focus{outline:2px solid var(--cmd);outline-offset:0}
+table.t select{width:auto;min-width:150px}
 
 </style>
 <div class="cls"><div class="wrap"><span class="blink" id="link">UNCLASSIFIED // Office of the Vice President // LINK PENDING</span><span>DOC-RN-2070.5</span></div></div>
@@ -448,7 +453,7 @@ const GROUPS = SITE === 'vp' ? ['Office of the Vice President','President of the
 
 function blankDoc(type, preset = {}) {
   const t = T[type];
-  return Object.assign({ type, status:'draft', cls:t.cls, title:t.title || '', number:'', date:today(), signer:BR.signer || '', signerTitle:(SITE === 'vp' && isWarDoc(type) ? 'Vice President and Acting Secretary of War' : BR.signerTitle || 'President of the United States'),
+  return Object.assign({ type, status:'draft', cls:t.cls, title:t.title || '', number:'', date:today(), signer:BR.signer || (SITE === 'vp' ? vpSigner() : '') || '', signerTitle:(SITE === 'vp' && isWarDoc(type) ? 'Vice President and Acting Secretary of War' : BR.signerTitle || 'President of the United States'),
     sigImg:'', f:Object.fromEntries((t.fields||[]).map(x => [x.k, x.opts ? x.opts[0] : ''])), sections:(t.sections||[]).map(([h,b]) => ({ h, b })),
     pre:(t.pre||[]).slice(), operative:t.operative || '' }, preset, { f:Object.assign(Object.fromEntries((t.fields||[]).map(x => [x.k, x.opts ? x.opts[0] : ''])), t.addressee ? { addressee:t.addressee } : {}, t.subject ? { subject:t.subject } : {}, preset.f || {}) });
 }
@@ -504,7 +509,7 @@ const VIEWS = [
 ];
 const WARV = [['overview','Overview'],['studio','Orders Studio'],['registry','Orders Registry'],['units','Units'],['personnel','Personnel'],['operations','Operations'],['justice','Military Justice'],['schedule','Training'],['record','Record'],['branding','Branding']];
 if (SITE === 'war') { VIEWS.length = 0; VIEWS.push(...WARV); }
-const VPV = [['overview','Overview'],['studio','Document Studio'],['registry','Register'],['senate','Senate'],['units','Units'],['personnel','Personnel'],['operations','Operations'],['justice','Military Justice'],['schedule','Schedule'],['record','Record'],['staff','Staff'],['branding','Branding']];
+const VPV = [['overview','Overview'],['studio','Document Studio'],['registry','Register'],['senate','Senate'],['units','Units'],['personnel','Personnel'],['operations','Operations'],['justice','Military Justice'],['schedule','Schedule'],['record','Record'],['staff','Admin'],['branding','Branding']];
 if (SITE === 'vp') { VIEWS.length = 0; VIEWS.push(...VPV); }
 VIEWS.splice(VIEWS.findIndex(x => x[0] === 'branding'), 0, ['discord', 'Discord']);
 if (SITE === 'potus') VIEWS.splice(VIEWS.findIndex(x => x[0] === 'discord'), 0, ['ebs', 'Emergency Broadcast']);
@@ -1549,52 +1554,76 @@ const vpUser = {
   profiles: async () => { await loadStaff(); const out = {}; for (const r of S.staff) out[r.user_id] = { name:r.name || r.email }; return out; },
 };
 const vpDownloads = { save: async ({ filename, data }) => { const a = document.createElement('a'); a.href = URL.createObjectURL(data); a.download = filename; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); } };
-async function loadStaff() { const { data } = await SB.from('vp_staff').select('user_id,email,name,role,created_at').order('created_at'); S.staff = data || []; return S.staff; }
+async function loadStaff() { const { data } = await SB.from('vp_staff').select('user_id,username,name,role,title,created_at').order('created_at'); S.staff = data || []; S.meRow = S.staff.find(r => S.session && r.user_id === S.session.user.id) || null; return S.staff; }
+const LOGIN_DOMAIN = 'ovp.example.com'; // accounts are usernames; this reserved domain never receives mail
+const ROLE_NAMES = { admin:'Admin', vp:'Vice President', staff:'Staff' };
+// The name that goes under the signature by default: the current Vice President.
+function vpSigner() { const v = (S.staff || []).find(r => r.role === 'vp'); return v ? v.name : ''; }
+async function adminCall(action, body = {}) {
+  const { data } = await SB.auth.getSession(); const tok = data.session ? data.session.access_token : SB_KEY;
+  let r; try { r = await fetch(SB_URL + '/functions/v1/vp-admin', { method:'POST', headers:{ 'content-type':'application/json', apikey:SB_KEY, Authorization:'Bearer ' + tok }, body:JSON.stringify({ action, ...body }) }); }
+  catch (e) { return { error:'Could not reach the server.' }; }
+  const j = await r.json().catch(() => ({})); return r.ok ? j : { error:j.error || 'Server error ' + r.status };
+}
 
-// Sign-in screen. Resolves once a staff member is signed in.
+// Sign-in screen. Resolves once a staff member is signed in. The first visit runs setup instead.
 function vpConnect() {
   return new Promise(resolve => {
     if (!window.supabase) { gate('error', 'The sign-in library did not load. Check your connection and reload.'); return; }
-    SB = window.supabase.createClient(SB_URL, SB_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:'implicit' } });
+    SB = window.supabase.createClient(SB_URL, SB_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:false } });
     let done = false;
     const ready = async session => {
-      if (done || !session) return; S.session = session;
-      if (/access_token|error_description/.test(location.hash)) { try { history.replaceState(null, '', location.pathname + (VIEWS.some(x => x[0] === S.view) ? '#' + S.view : '')); } catch (e) {} }
-      gate('checking');
-      const { data:role, error } = await SB.rpc('vp_claim', { display_name: (session.user.user_metadata && session.user.user_metadata.name) || '' });
-      if (error) { gate('error', 'Could not check your staff seat: ' + error.message); return; }
-      if (role === 'denied') { gate('denied', session.user.email); return; }
-      S.role = role; done = true; gate(null);
-      $('#link').textContent = 'UNCLASSIFIED // Office of the Vice President // LINK ESTABLISHED';
+      if (done || !session) return; S.session = session; gate('checking');
       await loadStaff().catch(() => {});
+      if (!S.meRow) { gate('denied'); return; }
+      S.role = S.meRow.role; done = true; gate(null);
+      $('#link').textContent = 'UNCLASSIFIED // Office of the Vice President // ' + (S.meRow.name || S.meRow.username).toUpperCase();
       resolve([sbDb(), vpUser, vpDownloads]);
     };
-    SB.auth.onAuthStateChange((ev, session) => { if (ev === 'SIGNED_OUT') location.reload(); else if (session) ready(session); });
-    SB.auth.getSession().then(({ data }) => { if (data.session) ready(data.session); else gate('signin'); });
+    SB.auth.onAuthStateChange((ev, session) => { if (ev === 'SIGNED_OUT') location.reload(); else if (session && ev === 'SIGNED_IN') ready(session); });
+    SB.auth.getSession().then(async ({ data }) => {
+      if (data.session) { ready(data.session); return; }
+      const st = await adminCall('status'); gate(st.needsSetup ? 'setup' : st.error ? 'error' : 'signin', st.error);
+    });
   });
 }
 function gate(state, info) {
   let g = $('#vp-gate');
   if (!state) { if (g) g.remove(); document.body.classList.remove('gated'); return; }
-  if (!g) { g = el('div', { id:'vp-gate', role:'dialog', 'aria-modal':'true', 'aria-label':'Staff sign in' }); document.body.append(g); }
+  if (!g) { g = el('div', { id:'vp-gate', role:'dialog', 'aria-modal':'true', 'aria-label':'Sign in' }); document.body.append(g); }
   document.body.classList.add('gated');
-  const box = el('div', { class:'gbox' }, el('img', { src:SEAL, alt:'', width:96, height:96 }), el('div', { class:'mono', text:'Office of the Vice President' }), el('h1', { text:'Staff sign in' }));
+  const box = el('div', { class:'gbox' }, el('img', { src:SEAL, alt:'', width:96, height:96 }), el('div', { class:'mono', text:'Office of the Vice President' }));
+  const field = (label, attrs) => { const i = el('input', attrs); return [i, el('label', { class:'f' }, el('span', { class:'mono', text:label }), i)]; };
+  const msg = el('p', { class:'gmsg' });
+  const signIn = async (username, password) => {
+    const { error } = await SB.auth.signInWithPassword({ email:username.trim().toLowerCase() + '@' + LOGIN_DOMAIN, password });
+    if (error) msg.textContent = /invalid/i.test(error.message) ? 'Wrong username or password.' : error.message;
+  };
   if (state === 'signin') {
-    const em = el('input', { type:'email', id:'vp-email', autocomplete:'email', placeholder:'you@example.com', 'aria-label':'Email' });
-    const msg = el('p', { class:'gmsg', text:'We email you a sign-in link. No password.' });
-    const go2 = async () => {
-      const email = em.value.trim(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { msg.textContent = 'Enter a valid email.'; return; }
-      btn.disabled = true; msg.textContent = 'Sending...';
-      const { error } = await SB.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.origin + location.pathname } });
-      btn.disabled = false; msg.textContent = error ? 'Could not send: ' + error.message : 'Check ' + email + ' and open the link on this device.';
-    };
-    const btn = el('button', { class:'btn primary w', type:'button', onclick:go2 }, 'Email me a sign-in link');
-    em.addEventListener('keydown', e => { if (e.key === 'Enter') go2(); });
-    box.append(el('label', { class:'f' }, el('span', { class:'mono', text:'Email' }), em), btn, msg);
-    setTimeout(() => em.focus(), 50);
-  } else if (state === 'checking') box.append(el('p', { class:'gmsg', text:'Checking your staff seat...' }));
-  else if (state === 'denied') box.append(el('p', { class:'gmsg', text:`${info} is not on the staff list. Ask the Vice President to invite this email from the Staff page.` }), el('button', { class:'btn w', type:'button', onclick:() => SB.auth.signOut() }, 'Sign out'));
-  else box.append(el('p', { class:'gmsg', text:info || 'Something went wrong.' }), el('button', { class:'btn w', type:'button', onclick:() => location.reload() }, 'Reload'));
+    const [u, uf] = field('Username', { type:'text', id:'vp-user', autocomplete:'username', autocapitalize:'none', spellcheck:'false' });
+    const [pw, pf] = field('Password', { type:'password', id:'vp-pass', autocomplete:'current-password' });
+    const go2 = async () => { if (!u.value.trim() || !pw.value) { msg.textContent = 'Enter your username and password.'; return; } btn.disabled = true; msg.textContent = 'Signing in...'; await signIn(u.value, pw.value); btn.disabled = false; };
+    const btn = el('button', { class:'btn primary w', type:'button', onclick:go2 }, 'Sign in');
+    for (const i of [u, pw]) i.addEventListener('keydown', e => { if (e.key === 'Enter') go2(); });
+    box.append(el('h1', { text:'Sign in' }), uf, pf, btn, msg, el('p', { class:'gnote', text:'Accounts are made by the admin. Ask them if you need one or forgot your password.' }));
+    setTimeout(() => u.focus(), 50);
+  } else if (state === 'setup') {
+    const [n, nf] = field('Your name', { type:'text', id:'vp-sname', autocomplete:'name' });
+    const [u, uf] = field('Username', { type:'text', id:'vp-suser', autocomplete:'username', autocapitalize:'none', spellcheck:'false' });
+    const [pw, pf] = field('Password (8 characters or more)', { type:'password', id:'vp-spass', autocomplete:'new-password' });
+    const [pw2, pf2] = field('Password again', { type:'password', id:'vp-spass2', autocomplete:'new-password' });
+    const btn = el('button', { class:'btn primary w', type:'button', onclick:async () => {
+      if (pw.value !== pw2.value) { msg.textContent = 'The passwords do not match.'; return; }
+      btn.disabled = true; msg.textContent = 'Creating the admin account...';
+      const r = await adminCall('setup', { name:n.value, username:u.value, password:pw.value });
+      if (r.error) { msg.textContent = r.error; btn.disabled = false; return; }
+      msg.textContent = 'Done. Signing in...'; await signIn(u.value, pw.value); btn.disabled = false;
+    } }, 'Create admin account');
+    box.append(el('h1', { text:'First-time setup' }), el('p', { class:'gnote', style:'margin:-8px 0 16px', text:'Make the admin account. The admin adds and removes everyone else from the Admin page.' }), nf, uf, pf, pf2, btn, msg);
+    setTimeout(() => n.focus(), 50);
+  } else if (state === 'checking') box.append(el('h1', { text:'Sign in' }), el('p', { class:'gmsg', text:'Opening your desk...' }));
+  else if (state === 'denied') box.append(el('h1', { text:'No access' }), el('p', { class:'gmsg', text:'This account was removed. Ask the admin to add you again.' }), el('button', { class:'btn w', type:'button', onclick:() => SB.auth.signOut() }, 'Sign out'));
+  else box.append(el('h1', { text:'Sign in' }), el('p', { class:'gmsg', text:info || 'Something went wrong.' }), el('button', { class:'btn w', type:'button', onclick:() => location.reload() }, 'Reload'));
   g.replaceChildren(box);
 }
 
@@ -1657,25 +1686,48 @@ function senateView(v) {
 }
 
 function staffView(v) {
-  const owner = S.role === 'owner';
-  v.append(head('Office of the Vice President', 'Staff', 'Who can sign in to this site. Invite staff by email. They sign in with a link sent to that email.',
+  const isAdmin = S.role === 'admin';
+  v.append(head('Office of the Vice President', isAdmin ? 'Admin' : 'Staff', isAdmin ? 'Add and remove the people who can sign in. Vice Presidents change over time: add the new one, mark them Vice President, and remove the old account when their term ends.' : 'Everyone who can sign in to this site.',
     el('button', { class:'btn w', type:'button', onclick:() => SB.auth.signOut() }, 'Sign out')));
-  const list = el('div', { class:'card' }, el('h3', { text:'Staff' }));
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } };
+  const after = async (r, ok) => { if (r.error) { toast(r.error); return false; } if (ok) { toast(ok); logIt(ok); } await loadStaff(); render(); return true; };
   const tb = el('tbody');
-  for (const s of S.staff) tb.append(el('tr', {}, el('td', { text:s.name || s.email }), el('td', { class:'mono', text:s.email }), el('td', { text:s.role === 'owner' ? 'Owner' : 'Staff' }),
-    el('td', {}, owner && s.role !== 'owner' ? holdBtn('Hold to remove', async () => { const { error } = await SB.from('vp_staff').delete().eq('user_id', s.user_id); if (error) toast('Could not remove: ' + error.message); else { logIt('Staff removed: ' + (s.name || s.email)); await loadStaff(); render(); } }, 'danger sm') : null)));
-  list.append(el('div', { style:'overflow-x:auto' }, el('table', { class:'t' }, el('thead', {}, el('tr', {}, ...['Name', 'Email', 'Role', ''].map(h => el('th', { text:h })))), tb)));
-  v.append(list);
-  if (!owner) return;
-  const inv = el('div', { class:'card', style:'margin-top:16px' }, el('h3', { text:'Invite staff' }));
-  const em = el('input', { type:'email', placeholder:'staff@example.com', 'aria-label':'Email to invite' }), nm = el('input', { type:'text', placeholder:'Name shown in the record', 'aria-label':'Name' });
-  const pending = el('ul', { class:'queue' });
-  const loadInv = async () => { const { data } = await SB.from('vp_invites').select('email,name,invited_at').order('invited_at'); pending.replaceChildren(...(data || []).map(i => qItem('', `${i.name || i.email} (${i.email})`, 'Invited. Becomes staff on first sign-in.',
-    el('button', { class:'btn sm w', type:'button', onclick:async () => { await SB.from('vp_invites').delete().eq('email', i.email); loadInv(); } }, 'Cancel')))); if (!pending.children.length) pending.append(el('li', { class:'empty', text:'No pending invites.' })); };
-  inv.append(el('div', { style:'padding:0 16px 16px' }, el('div', { class:'row w', style:'gap:12px;align-items:flex-end' }, el('label', { class:'f', style:'flex:1;min-width:200px' }, el('span', { class:'mono', text:'Email' }), em), el('label', { class:'f', style:'flex:1;min-width:160px' }, el('span', { class:'mono', text:'Name' }), nm),
-    el('button', { class:'btn primary w', type:'button', style:'margin-bottom:10px', onclick:async () => { const e = em.value.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) { toast('Enter a valid email.'); return; }
-      const { error } = await SB.from('vp_invites').upsert({ email:e, name:nm.value.trim() }); if (error) toast('Could not invite: ' + error.message); else { toast('Invited ' + e); logIt('Staff invited: ' + (nm.value.trim() || e)); em.value = ''; nm.value = ''; loadInv(); } } }, 'Invite')), pending));
-  v.append(inv); loadInv();
+  for (const s of S.staff) {
+    const me = S.session && s.user_id === S.session.user.id;
+    const cells = [el('td', {}, el('strong', { text:s.name || s.username }), me ? el('span', { class:'chip', style:'margin-left:8px', text:'You' }) : null),
+      el('td', { class:'mono', text:s.username || '' }), el('td', { text:s.title || '' }), el('td', {}, el('span', { class:'chip ' + (s.role === 'vp' ? 'issued' : ''), text:ROLE_NAMES[s.role] || s.role }))];
+    if (isAdmin) {
+      const role = el('select', { 'aria-label':'Role for ' + (s.name || s.username) }); for (const [k, n] of Object.entries(ROLE_NAMES)) role.append(el('option', { value:k }, n)); role.value = s.role;
+      role.addEventListener('change', () => busy(role, async () => { if (!(await after(await adminCall('update', { user_id:s.user_id, role:role.value }), `${s.name}: role set to ${ROLE_NAMES[role.value]}`))) role.value = s.role; }));
+      const pwBtn = el('button', { class:'btn sm w', type:'button', onclick:() => busy(pwBtn, async () => {
+        const pw = window.prompt(`New password for ${s.name || s.username} (8 characters or more):`); if (!pw) return;
+        await after(await adminCall('password', { user_id:s.user_id, password:pw }), `Password reset for ${s.name || s.username}`); }) }, 'Reset password');
+      const titleBtn = el('button', { class:'btn sm w', type:'button', onclick:() => busy(titleBtn, async () => {
+        const t = window.prompt(`Title for ${s.name || s.username}:`, s.title || ''); if (t === null) return;
+        await after(await adminCall('update', { user_id:s.user_id, title:t }), `Title updated for ${s.name || s.username}`); }) }, 'Edit title');
+      cells.push(el('td', {}, el('div', { class:'row w', style:'gap:6px;flex-wrap:wrap' }, role, titleBtn, pwBtn,
+        me ? null : holdBtn('Hold to remove', async () => { await after(await adminCall('remove', { user_id:s.user_id }), `Account removed: ${s.name || s.username}`); }, 'danger sm'))));
+    }
+    tb.append(el('tr', {}, ...cells));
+  }
+  v.append(el('div', { class:'card' }, el('h3', { text:'Accounts' }), el('div', { style:'overflow-x:auto' }, el('table', { class:'t' },
+    el('thead', {}, el('tr', {}, ...['Name', 'Username', 'Title', 'Role', ...(isAdmin ? ['Manage'] : [])].map(h => el('th', { text:h })))), tb))));
+  if (!isAdmin) return;
+  const f = (label, attrs) => { const i = el(attrs.tag || 'input', attrs.tag ? {} : attrs); return [i, el('label', { class:'f', style:'flex:1;min-width:170px' }, el('span', { class:'mono', text:label }), i)]; };
+  const [n, nf] = f('Name', { type:'text', placeholder:'Shown on documents and in the record' });
+  const [u, uf] = f('Username', { type:'text', placeholder:'lowercase, no spaces', autocapitalize:'none', spellcheck:'false' });
+  const [pw, pf] = f('Password', { type:'text', placeholder:'8 characters or more', autocomplete:'off' });
+  const [t, tf] = f('Title', { type:'text', placeholder:'Chief of Staff' });
+  const role = el('select', { 'aria-label':'Role' }); for (const [k, nm] of Object.entries(ROLE_NAMES)) role.append(el('option', { value:k }, nm)); role.value = 'staff';
+  const add = el('button', { class:'btn primary w', type:'button', onclick:() => busy(add, async () => {
+    const r = await adminCall('add', { name:n.value, username:u.value, password:pw.value, title:t.value || (role.value === 'vp' ? 'Vice President of the United States' : ''), role:role.value });
+    if (await after(r, `Account added: ${n.value.trim()} (${ROLE_NAMES[role.value]})`)) toast(`Give ${n.value.trim()} the username and password you set.`); }) }, 'Add account');
+  v.append(el('div', { class:'card', style:'margin-top:16px' }, el('h3', { text:'Add an account' }), el('div', { style:'padding:0 16px 16px' },
+    el('div', { class:'row w', style:'gap:12px;flex-wrap:wrap;align-items:flex-end' }, nf, uf, pf, tf, el('label', { class:'f', style:'min-width:170px' }, el('span', { class:'mono', text:'Role' }), role)),
+    el('ul', { style:'margin:4px 0 12px;padding-left:18px;color:var(--ink2);line-height:1.6' },
+      el('li', { text:'Vice President: signs documents by default. Only one at a time. Naming a new one moves the old one to Staff.' }),
+      el('li', { text:'Admin: can add, change, and remove accounts. Keep yourself as Admin.' }),
+      el('li', { text:'Staff: can draft, sign, and issue, but cannot manage accounts.' })), add)));
 }
 
 // ---------- the Discord link ----------
